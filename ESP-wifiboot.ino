@@ -6,7 +6,16 @@
 MDNSResponder mdns;
 WiFiServer server(80);
 
-const char* ssid = "BUBBLES";
+const char* ssid = "esp8266-hue";
+const char* ident  = "esp8266user";
+String command;
+String hueip = "";  
+  
+// PIR sensor
+int PIRsensor =   0;
+int LightStatus = 0;
+int PIRStatus   = 0;
+
 String st;
 
 void setup() {
@@ -27,22 +36,37 @@ void setup() {
   Serial.println(esid);
   Serial.println("Reading EEPROM pass");
   String epass = "";
-  for (int i = 32; i < 96; ++i)
+  for (int i = 32; i < 96; ++i) 
     {
       epass += char(EEPROM.read(i));
     }
   Serial.print("PASS: ");
   Serial.println(epass);  
-  if ( esid.length() > 1 ) {
+
+// ip max 16 znakow
+  for (int i = 96; i < 112; ++i) 
+    {
+      hueip += char(EEPROM.read(i));
+    }
+  Serial.print("HUE IP: ");
+  Serial.println(hueip);    
+  
+  
+//  if ( esid.length() > 1 ) {
       // test esid 
       WiFi.begin(esid.c_str(), epass.c_str());
       if ( testWifi() == 20 ) { 
-          launchWeb(0);
+          //launchWeb(0);
           return;
       }
-  }
+//  }
   setupAP(); 
+  
+  
+  // regular setup:
+  pinMode(PIRStatus,INPUT);
 }
+
 
 int testWifi(void) {
   int c = 0;
@@ -81,7 +105,7 @@ void launchWeb(int webtype) {
 
 void setupAP(void) {
   
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_AP);
   WiFi.disconnect();
   delay(100);
   int n = WiFi.scanNetworks();
@@ -173,22 +197,46 @@ int mdns1(int webtype)
         s += ipStr;
         s += "<p>";
         s += st;
-        s += "<form method='get' action='a'><label>SSID: </label><input name='ssid' length=32><input name='pass' length=64><input type='submit'></form>";
+        s += "<form method='get' action='a'><label>SSID: </label><input name='ssid' length=32><br><label>Pass:</label><input name='pass' length=64><br><label>hue ip:</label><input name='hueip' length=16><input type='submit'></form>";
         s += "</html>\r\n\r\n";
         Serial.println("Sending 200");
       }
       else if ( req.startsWith("/a?ssid=") ) {
-        // /a?ssid=blahhhh&pass=poooo
+        
+        //req = URLEncode(string2char(req));
         Serial.println("clearing eeprom");
-        for (int i = 0; i < 96; ++i) { EEPROM.write(i, 0); }
-        String qsid; 
-        qsid = req.substring(8,req.indexOf('&'));
+        for (int i = 0; i < 112; ++i) { EEPROM.write(i, 0); }
+
+        // wycina od 8 znaku do pierwszego wystapienia "&"
+        Serial.print("query: "); Serial.println(req);
+        Serial.println("GET SSID:");
+        String qsid = req.substring(8,req.indexOf('&'));
+        qsid = escapeParameter(qsid);
         Serial.println(qsid);
-        Serial.println("");
-        String qpass;
-        qpass = req.substring(req.lastIndexOf('=')+1);
+        
+        // skreacamy req - usuwamy pierwszy czlon
+        req = req.substring(req.indexOf('&')+1, req.length());
+        Serial.print("query: "); Serial.println(req);
+        
+        // wycina od 5 znaku do pierwszego wystapienia "&"
+        Serial.println("GET PASS:");
+        String qpass = req.substring(5,req.indexOf('&'));
+        qpass = escapeParameter(qpass);
         Serial.println(qpass);
+
+        
+        // skreacamy req - usuwamy pierwszy czlon
+        req = req.substring(req.indexOf('&')+1, req.length());   
+        Serial.print("query: "); Serial.println(req);     
+        
+        // wycina od 5 znaku do pierwszego wystapienia "&"
+        Serial.println("GET HUE IP:");
+        String qhueip = req.substring(req.lastIndexOf('=')+1);
+        Serial.println(qhueip);        
+        
+        
         Serial.println("");
+                
         
         Serial.println("writing eeprom ssid:");
         for (int i = 0; i < qsid.length(); ++i)
@@ -204,6 +252,14 @@ int mdns1(int webtype)
             Serial.print("Wrote: ");
             Serial.println(qpass[i]); 
           }    
+        Serial.println("writing eeprom hue ip:"); 
+        for (int i = 0; i < qhueip.length(); ++i)
+          {
+            EEPROM.write(96+i, qhueip[i]);
+            Serial.print("Wrote: ");
+            Serial.println(qhueip[i]); 
+          }            
+          
         EEPROM.commit();
         s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE HTML>\r\n<html>Hello from ESP8266 ";
         s += "Found ";
@@ -220,8 +276,8 @@ int mdns1(int webtype)
   {
       if (req == "/")
       {
-        s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE HTML>\r\n<html>Hello from ESP8266";
-        s += "<p>";
+        s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE HTML>\r\n<html>ESP8266 HUE PIR sensor.";
+        s += "<p></p>";
         s += "</html>\r\n\r\n";
         Serial.println("Sending 200");
       }
@@ -231,7 +287,7 @@ int mdns1(int webtype)
         s += "</html>\r\n\r\n";
         Serial.println("Sending 200");  
         Serial.println("clearing eeprom");
-        for (int i = 0; i < 96; ++i) { EEPROM.write(i, 0); }
+        for (int i = 0; i < 112; ++i) { EEPROM.write(i, 0); }
         EEPROM.commit();
       }
       else
@@ -245,9 +301,103 @@ int mdns1(int webtype)
   return(20);
 }
 
+String escapeParameter(String param) {
+  param.replace("+"," ");
+  param.replace("%21","!");
+  param.replace("%23","#");
+  param.replace("%24","$");
+  param.replace("%26","&");
+  param.replace("%27","'");
+  param.replace("%28","(");
+  param.replace("%29",")");
+  param.replace("%2A","*");
+  param.replace("%2B","+");
+  param.replace("%2C",",");
+  param.replace("%2F","/");
+  param.replace("%3A",":");
+  param.replace("%3B",";");
+  param.replace("%3D","=");
+  param.replace("%3F","?");
+  param.replace("%40","@");
+  param.replace("%5B","[");
+  param.replace("%5D","]");
+  
+  return param;
+}
+
+
+
 
 
 void loop() {
   // put your main code here, to run repeatedly:
+  
+  PIRStatus = digitalRead(PIRsensor);
+  
+  Serial.print("PIR: ");
+  Serial.print(PIRStatus);
+  Serial.print("   light: ");
+  Serial.println(LightStatus);
+  
+  if(PIRStatus == 1 && LightStatus == 0) {
+    TurnOn(14);  
+    LightStatus = 1;
+  }  
+  else if(PIRStatus == 0 && LightStatus == 1) {
+    TurnOff(14);
+    LightStatus = 0;
+  }
+  
+}
 
+
+void TurnOn(int bulb) {
+  WiFiClient client;
+  if (!client.connect(hueip.c_str(), 80)) {
+    Serial.println("connection failed");
+    return;
+  }
+  // \"hue\": 50100,\"sat\":255,
+  command = "{\"on\": true,\"bri\":128,\"transitiontime\":2}";
+  // This will send the request to the server
+  client.print("PUT /api/");
+  client.print(ident);
+  client.print("/lights/");
+  client.print(bulb);  // hueLight zero based, add 1
+  client.println("/state HTTP/1.1");
+  client.println("keep-alive");
+  client.print("Host: ");
+  client.println(hueip.c_str());
+  client.print("Content-Length: ");
+  client.println(command.length());
+  client.println("Content-Type: text/plain;charset=UTF-8");
+  client.println();  // blank line before body
+  client.println(command);  // Hue command
+  client.stop();
+  Serial.println("closing connection");
+}
+
+void TurnOff(int bulb) {
+  WiFiClient client;
+  if (!client.connect(hueip.c_str(), 80)) {
+    Serial.println("connection failed");
+    return;
+  }
+  command = "{\"on\": false}";
+  // This will send the request to the server
+  client.print("PUT /api/");
+  client.print(ident);
+  client.print("/lights/");
+  client.print(bulb);  // hueLight zero based, add 1
+  client.println("/state HTTP/1.1");
+  client.println("keep-alive");
+  client.print("Host: ");
+  client.println(hueip.c_str());
+  client.print("Content-Length: ");
+  client.println(command.length());
+  client.println("Content-Type: text/plain;charset=UTF-8");
+  client.println();  // blank line before body
+  client.println(command);  // Hue command
+  client.stop();
+  Serial.println("closing connection");
 }
